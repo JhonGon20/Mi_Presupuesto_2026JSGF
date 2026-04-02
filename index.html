@@ -1590,6 +1590,29 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
     }
   }
 
+  // ── TOKEN CLIENT ─────────────────────────────────────────
+  var _tokenClient = null;
+  function getTokenClient(callback) {
+    if (typeof google === 'undefined') {
+      showToast('Cargando Google API...'); setTimeout(function(){ getTokenClient(callback); }, 1500); return;
+    }
+    _tokenClient = google.accounts.oauth2.initTokenClient({
+      client_id: DRIVE_CLIENT_ID, scope: DRIVE_SCOPE,
+      callback: callback
+    });
+    return _tokenClient;
+  }
+
+  function refreshToken(onSuccess) {
+    getTokenClient(function(resp) {
+      if (resp.error) { showToast('Error de autenticacion'); return; }
+      driveToken = resp.access_token;
+      driveReady = true;
+      if (onSuccess) onSuccess();
+    });
+    _tokenClient.requestAccessToken({ prompt: '' }); // silent refresh, no popup
+  }
+
   // ── CONNECT & LOAD ───────────────────────────────────────
   window.driveConnect = driveConnect;
   function driveConnect() {
@@ -1597,16 +1620,13 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
       showToast('Cargando Google API...'); setTimeout(driveConnect, 1500); return;
     }
     if (driveReady) { driveSave(); return; }
-    google.accounts.oauth2.initTokenClient({
-      client_id: DRIVE_CLIENT_ID, scope: DRIVE_SCOPE,
-      callback: function(resp) {
-        if (resp.error) { showToast('Error de autenticacion'); return; }
-        driveToken = resp.access_token;
-        driveReady = true;
-        // On connect: load from Drive first, then offer save
-        driveLoadOnce();
-      }
-    }).requestAccessToken();
+    getTokenClient(function(resp) {
+      if (resp.error) { showToast('Error de autenticacion'); return; }
+      driveToken = resp.access_token;
+      driveReady = true;
+      driveLoadOnce();
+    });
+    _tokenClient.requestAccessToken();
   }
 
   function driveLoadOnce() {
@@ -1614,8 +1634,16 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
     var url = 'https://www.googleapis.com/drive/v3/files?spaces=appDataFolder&q=name%3D%22' +
               DRIVE_FILE_NAME + '%22&fields=files(id)';
     fetch(url, { headers: { Authorization: 'Bearer ' + driveToken } })
-      .then(function(r) { return r.json(); })
+      .then(function(r) {
+        if (r.status === 401 || r.status === 403) {
+          driveReady = false; updateDriveBadge('active');
+          showToast('Sesion expirada, toca Drive para reconectar');
+          return null;
+        }
+        return r.json();
+      })
       .then(function(data) {
+        if (!data) return;
         if (data.files && data.files.length > 0) {
           driveFileId = data.files[0].id;
           localStorage.setItem('ppto_drive_file_id', driveFileId);
@@ -1671,10 +1699,21 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
           Authorization: 'Bearer '+driveToken,
           'Content-Type': 'multipart/related; boundary='+boundary
         }, body: bodyUpdate
-      }).then(function(r) { return r.json(); })
+      }).then(function(r) {
+          if (r.status === 401 || r.status === 403) {
+            // Token expired — refresh and retry once
+            updateDriveBadge('active');
+            driveReady = false;
+            showToast('Sesion expirada, reconectando...');
+            setTimeout(function() { driveConnect(); }, 500);
+            return null;
+          }
+          return r.json();
+        })
         .then(function(d) {
+          if (!d) return;
           updateDriveBadge('active');
-          showToast(d.id ? 'Guardado en Drive' : 'Error: ' + (d.error && d.error.message || 'desconocido'));
+          showToast(d.id ? 'Guardado en Drive' : 'Error: ' + (d.error && d.error.message || 'intenta de nuevo'));
         })
         .catch(function(e) { console.error('driveSave PATCH error:',e); updateDriveBadge('active'); showToast('Error guardando'); });
     } else {
