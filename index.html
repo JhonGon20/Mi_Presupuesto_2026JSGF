@@ -1559,7 +1559,6 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
   var driveReady      = false;
   var driveToken      = null;
 
-  // ── DB functions ────────────────────────────────────────
   function loadDB() {
     try {
       var r = localStorage.getItem('ppto_v7');
@@ -1567,78 +1566,64 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
     } catch(e) {}
     return JSON.parse(JSON.stringify(SEED));
   }
-
   function saveDB() {
-    try { localStorage.setItem('ppto_v7', JSON.stringify(DB)); } catch(e) {}
-    // Add timestamp so Drive knows this is the latest version
+    DB._savedAt = DB._savedAt || 0;
     DB._savedAt = Date.now();
     try { localStorage.setItem('ppto_v7', JSON.stringify(DB)); } catch(e) {}
     if (driveReady && driveToken) driveSave();
   }
 
-  // ── DRIVE TOKEN PERSISTENCE ─────────────────────────────
+  // ── TOKEN PERSISTENCE ────────────────────────────────────
   function saveToken(token) {
-    driveToken = token;
-    driveReady = true;
+    driveToken = token; driveReady = true;
     try {
       localStorage.setItem('ppto_drive_token', JSON.stringify({
-        token: token,
-        expiry: Date.now() + 55 * 60 * 1000  // 55 min (token lasts 60)
+        token: token, expiry: Date.now() + 55*60*1000
       }));
     } catch(e) {}
   }
-
   function loadSavedToken() {
     try {
-      var saved = JSON.parse(localStorage.getItem('ppto_drive_token') || 'null');
-      if (saved && saved.expiry > Date.now()) {
-        return saved.token;
-      }
+      var s = JSON.parse(localStorage.getItem('ppto_drive_token') || 'null');
+      if (s && s.expiry > Date.now()) return s.token;
     } catch(e) {}
     return null;
   }
 
-  // ── AUTO-RECONNECT on page load ─────────────────────────
-  function driveAutoConnect() {
-    var savedToken = loadSavedToken();
-    if (savedToken) {
-      driveToken = savedToken;
-      driveReady = true;
-      updateDriveBadge(true);
-      driveLoad();
-    }
-  }
-
+  // ── BADGE ────────────────────────────────────────────────
   function updateDriveBadge(connected) {
-    var badge = document.getElementById('drive-badge');
-    if (!badge) return;
+    var b = document.getElementById('drive-badge');
+    if (!b) return;
     if (connected) {
-      badge.textContent = '☁ Drive activo';
-      badge.style.color = 'var(--green)';
-      badge.style.borderColor = 'rgba(0,229,160,.3)';
-      badge.style.background = 'rgba(0,229,160,.1)';
+      b.textContent = '☁ Drive activo';
+      b.style.color = 'var(--green)';
+      b.style.borderColor = 'rgba(0,229,160,.3)';
+      b.style.background  = 'rgba(0,229,160,.1)';
     } else {
-      badge.innerHTML = '&#9729; Drive';
-      badge.style.color = '#4285f4';
-      badge.style.borderColor = 'rgba(66,133,244,.3)';
-      badge.style.background = 'rgba(66,133,244,.12)';
+      b.innerHTML = '&#9729; Drive';
+      b.style.color = '#4285f4';
+      b.style.borderColor = 'rgba(66,133,244,.3)';
+      b.style.background  = 'rgba(66,133,244,.12)';
     }
   }
 
-  // ── DRIVE CONNECT (manual) ──────────────────────────────
+  // ── AUTO-CONNECT on page load ────────────────────────────
+  function driveAutoConnect() {
+    var t = loadSavedToken();
+    if (t) { driveToken = t; driveReady = true; updateDriveBadge(true); driveLoad(); }
+  }
+
+  // ── MANUAL CONNECT ───────────────────────────────────────
   window.driveConnect = driveConnect;
   function driveConnect() {
     if (driveReady) { driveLoad(); return; }
     if (typeof google === 'undefined') {
-      showToast('Cargando Google API...');
-      setTimeout(driveConnect, 1500);
-      return;
+      showToast('Cargando Google API...'); setTimeout(driveConnect, 1500); return;
     }
     google.accounts.oauth2.initTokenClient({
-      client_id: DRIVE_CLIENT_ID,
-      scope: DRIVE_SCOPE,
+      client_id: DRIVE_CLIENT_ID, scope: DRIVE_SCOPE,
       callback: function(resp) {
-        if (resp.error) { console.error('Drive auth error:', resp.error); return; }
+        if (resp.error) return;
         saveToken(resp.access_token);
         updateDriveBadge(true);
         driveLoad();
@@ -1646,14 +1631,14 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
     }).requestAccessToken();
   }
 
-  // ── DRIVE LOAD — respects local changes ─────────────────
+  // ── LOAD — timestamp-based conflict resolution ───────────
   window.driveLoad = driveLoad;
   function driveLoad() {
     var url = 'https://www.googleapis.com/drive/v3/files?spaces=appDataFolder&q=name%3D%22' +
-              DRIVE_FILE_NAME + '%22&fields=files(id%2Cname%2CmodifiedTime)';
+              DRIVE_FILE_NAME + '%22&fields=files(id)';
     fetch(url, { headers: { Authorization: 'Bearer ' + driveToken } })
       .then(function(r) {
-        if (r.status === 401) { driveReady = false; updateDriveBadge(false); return null; }
+        if (r.status === 401) { driveReady=false; updateDriveBadge(false); return null; }
         return r.json();
       })
       .then(function(data) {
@@ -1661,40 +1646,33 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
         if (data.files && data.files.length > 0) {
           driveFileId = data.files[0].id;
           localStorage.setItem('ppto_drive_file_id', driveFileId);
-          // Load Drive content
-          fetch('https://www.googleapis.com/drive/v3/files/' + driveFileId + '?alt=media', {
-            headers: { Authorization: 'Bearer ' + driveToken }
-          }).then(function(r) { return r.json(); })
+          fetch('https://www.googleapis.com/drive/v3/files/' + driveFileId + '?alt=media',
+            { headers: { Authorization: 'Bearer ' + driveToken } })
+            .then(function(r) { return r.json(); })
             .then(function(driveData) {
               if (!driveData || !driveData.transactions) return;
-              // Compare timestamps — use whichever is newer
-              var localTs  = DB._savedAt || 0;
-              var driveTs  = driveData._savedAt || 0;
+              var localTs = DB._savedAt || 0;
+              var driveTs = driveData._savedAt || 0;
               if (driveTs > localTs) {
                 DB = driveData;
                 localStorage.setItem('ppto_v7', JSON.stringify(DB));
-                _clearCache();
-                renderAll();
+                _clearCache(); renderAll();
                 showToast('Drive sincronizado');
               } else if (localTs > driveTs) {
-                // Local is newer — push to Drive
-                driveSave();
-                showToast('Drive actualizado');
+                driveSave(); showToast('Drive actualizado');
               } else {
-                showToast('Drive: datos al dia');
+                showToast('Drive: al dia');
               }
             });
         } else {
-          // No file in Drive yet — create with current data
           DB._savedAt = Date.now();
-          driveSave();
-          showToast('Drive: primer guardado');
+          driveSave(); showToast('Drive: primer guardado');
         }
       })
-      .catch(function(e) { console.error('Drive load error:', e); });
+      .catch(function(e) { console.error('driveLoad error:', e); });
   }
 
-  // ── DRIVE SAVE ──────────────────────────────────────────
+  // ── SAVE ─────────────────────────────────────────────────
   window.driveSave = driveSave;
   function driveSave() {
     if (!driveReady || !driveToken) return;
@@ -1702,47 +1680,962 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
     var boundary = 'ppto2026boundary';
     var metadata = JSON.stringify({ name: DRIVE_FILE_NAME, parents: ['appDataFolder'] });
     var nl = String.fromCharCode(13,10);
-    var body = '--' + boundary + nl +
-               'Content-Type: application/json' + nl + nl +
-               metadata + nl +
-               '--' + boundary + nl +
-               'Content-Type: application/json' + nl + nl +
-               content + nl +
-               '--' + boundary + '--';
+    var body = '--'+boundary+nl+'Content-Type: application/json'+nl+nl+
+               metadata+nl+'--'+boundary+nl+'Content-Type: application/json'+nl+nl+
+               content+nl+'--'+boundary+'--';
     var url    = driveFileId
-      ? 'https://www.googleapis.com/upload/drive/v3/files/' + driveFileId + '?uploadType=multipart'
+      ? 'https://www.googleapis.com/upload/drive/v3/files/'+driveFileId+'?uploadType=multipart'
       : 'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart';
-    var method = driveFileId ? 'PATCH' : 'POST';
     fetch(url, {
-      method: method,
+      method: driveFileId ? 'PATCH' : 'POST',
       headers: {
-        Authorization: 'Bearer ' + driveToken,
-        'Content-Type': 'multipart/related; boundary=' + boundary
-      },
-      body: body
+        Authorization: 'Bearer '+driveToken,
+        'Content-Type': 'multipart/related; boundary='+boundary
+      }, body: body
     }).then(function(r) {
-        if (r.status === 401) { driveReady = false; updateDriveBadge(false); return null; }
+        if (r.status===401) { driveReady=false; updateDriveBadge(false); return null; }
         return r.json();
       })
-      .then(function(data) {
-        if (data && data.id) {
-          driveFileId = data.id;
-          localStorage.setItem('ppto_drive_file_id', driveFileId);
-        }
+      .then(function(d) {
+        if (d && d.id) { driveFileId=d.id; localStorage.setItem('ppto_drive_file_id',d.id); }
       })
-      .catch(function(e) { console.error('Drive save error:', e); });
+      .catch(function(e) { console.error('driveSave error:', e); });
   }
 
   function showToast(msg) {
     var t = document.createElement('div');
-    t.style.cssText = 'position:fixed;bottom:80px;left:50%;transform:translateX(-50%);background:var(--green);color:#000;padding:8px 18px;border-radius:20px;font-size:12px;font-weight:600;z-index:9999';
-    t.textContent = msg;
-    document.body.appendChild(t);
-    setTimeout(function(){ t.remove(); }, 2500);
+    t.style.cssText='position:fixed;bottom:80px;left:50%;transform:translateX(-50%);background:var(--green);color:#000;padding:8px 18px;border-radius:20px;font-size:12px;font-weight:600;z-index:9999';
+    t.textContent=msg; document.body.appendChild(t);
+    setTimeout(function(){ t.remove(); },2500);
   }
   window.showToast = showToast;
 
 
+  // ── DEUDAS PAGADAS ────────────────────────────────────────
+  var PAID_ITEMS = (function() {
+    try { return JSON.parse(localStorage.getItem('ppto_v7_paid') || '{}'); } catch(e) { return {}; }
+  })();
+  function savePaid() { try { localStorage.setItem('ppto_v7_paid', JSON.stringify(PAID_ITEMS)); } catch(e) {} }
+  window.markPaid = function(di, ii) {
+    PAID_ITEMS[di + '_' + ii] = true;
+    savePaid(); renderDebts();
+  };
+  window.unmarkPaid = function(di, ii) {
+    delete PAID_ITEMS[di + '_' + ii];
+    savePaid(); renderDebts();
+  };
+
+  // ── BALANCE ──────────────────────────────────────────────────
+  // ── SALDO CHAIN ──────────────────────────────────────────────
+  // getSaldo is recursive: each month's "Saldo mes anterior" = the full getSaldo.libre of the prior month.
+  // This means a change in enero propagates all the way through to diciembre automatically.
+  // Cache per render cycle to avoid repeated recursion on the same call tree.
+  var _saldoCache = {};
+  function _clearCache() { _saldoCache = {}; }
+
+  function getSaldo(monthKey) {
+    if (_saldoCache[monthKey] !== undefined) return _saldoCache[monthKey];
+
+    var idx  = MK[monthKey] !== undefined ? MK[monthKey] : 3;
+    var base = MESES[idx];
+
+    // Saldo del mes anterior: full recursive getSaldo of prior month
+    var saldoAnterior = 0;
+    if (idx > 0) {
+      saldoAnterior = getSaldo(MKS[idx - 1]).libre;
+    }
+
+    // Manual transactions added by user for THIS month only
+    var tx = DB.transactions.filter(function(t) { return t.month === monthKey; });
+    // Exclude cuota-madre transactions (their value spans multiple months via projections)
+    var xG = tx.filter(function(t) { return t.type === 'gasto' && t.id >= 30 && (!t.cuotas || t.cuotas < 2); }).reduce(function(s,t) { return s + t.amount; }, 0);
+    var xI = tx.filter(function(t) { return t.type === 'ingreso' && t.id >= 30; }).reduce(function(s,t) { return s + t.amount; }, 0);
+    // Add cuota projections for this month (each cuota counts as a gasto)
+    var cuotasThisMes = getCuotasForMonth(monthKey);
+    xG += cuotasThisMes.reduce(function(s,ct) { return s + ct.cuotaVal; }, 0);
+
+    // libre = base libre (ingreso base - obligaciones base, already calculated)
+    //       + saldoAnterior (from prior month, dynamic)
+    //       + xI (extra manual income this month)
+    //       - xG (extra manual gastos this month)
+    var libre = base.libre + saldoAnterior + xI - xG;
+
+    var result = {
+      ing:           base.ing + saldoAnterior + xI,
+      oblig:         base.oblig + xG,
+      libre:         libre,
+      reserva:       base.reserva || 0,
+      saldoAnterior: saldoAnterior,
+      base:          base
+    };
+    _saldoCache[monthKey] = result;
+    return result;
+  }
+
+  // ── CUOTAS HELPERS ──────────────────────────────────────────
+  // Returns all projected cuota transactions for a given base tx
+  function getCuotasTx(t) {
+    if (!t.cuotas || t.cuotas < 2) return [];
+    var result = [];
+    var mesIdx = MK_NUM[t.month];
+    if (mesIdx === undefined) return [];
+    for (var n = 0; n < t.cuotas; n++) {
+      var mIdx = (mesIdx + n) % 12;
+      result.push({
+        id:       t.id,
+        desc:     t.desc,
+        cuotaNum: n + 1,
+        cuotas:   t.cuotas,
+        cuotaVal: t.cuotaValor,
+        total:    t.amount,
+        month:    MK_NAME[mIdx],
+        cat:      t.cat,
+        date:     t.date,
+        source:   t.source || '',
+        esCuota:  true
+      });
+    }
+    return result;
+  }
+
+  // Get all cuota projections for all cuota transactions in DB
+  function getAllCuotas() {
+    var all = [];
+    DB.transactions.forEach(function(t) {
+      if (t.cuotas && t.cuotas >= 2) {
+        getCuotasTx(t).forEach(function(c) { all.push(c); });
+      }
+    });
+    return all;
+  }
+
+  // Get cuotas for a specific month
+  function getCuotasForMonth(monthKey) {
+    return getAllCuotas().filter(function(c) { return c.month === monthKey; });
+  }
+
+
+
+  // Call _clearCache() before any render so values are fresh
+  function getSaldoBase(monthKey) { return getSaldo(monthKey).libre; }
+
+  // ── NAV ──────────────────────────────────────────────────────
+  function goTo(screen, btn) {
+    document.querySelectorAll('.screen').forEach(function(s) { s.classList.remove('active'); });
+    document.querySelectorAll('.nav-btn').forEach(function(b) { b.classList.remove('active'); });
+    document.getElementById('s-' + screen).classList.add('active');
+    if (btn) btn.classList.add('active');
+    var renders = { home: renderHome, cards: renderCards, debts: renderDebts, year: renderYear, history: renderHistory };
+    if (renders[screen]) renders[screen]();
+  }
+  window.goTo = goTo;
+
+  // ── HOME ─────────────────────────────────────────────────────
+  var homeMonth = 'abril';
+  window.setHomeMonth = function(m) { homeMonth = m; renderHome(); };
+
+  // Refresh all screens that are currently visible or cached
+
+  // ── RECOVERED FUNCTIONS ──────────────────────────────────
+  var mesAbierto = null;
+  function renderDebts() {
+  // ── Base DEBTS from JSON ─────────────────────────────────
+  var totalDeuda = DEBTS.reduce(function(s,d){ return s+d.total; },0);
+  // Add user cuota totals to deuda total
+  var mesActualGlobal = new Date().getMonth();
+  var cuotaDebtTxs = DB.transactions.filter(function(t) {
+    if (!t.cuotas || t.cuotas < 2 || t.type !== 'gasto') return false;
+    var mesInicio = MK_NUM[t.month] !== undefined ? MK_NUM[t.month] : 0;
+    var pagadas   = Math.max(0, Math.min(t.cuotas, mesActualGlobal - mesInicio + 1));
+    return pagadas < t.cuotas; // solo mostrar si quedan cuotas por pagar
+  });
+  cuotaDebtTxs.forEach(function(t) {
+    var mesInicio = MK_NUM[t.month] !== undefined ? MK_NUM[t.month] : 0;
+    var mesActual = new Date().getMonth();
+    var pagadas   = Math.max(0, Math.min(t.cuotas, mesActual - mesInicio + 1));
+    totalDeuda += (t.cuotas - pagadas) * t.cuotaValor;
+  });
+
+  var baseHTML = '<div class="section-lbl">Deuda total activa: ' + fmt(totalDeuda) + '</div>' +
+  DEBTS.map(function(d, di) {
+    // Check if all items are fully paid (including manually marked)
+    var allPaid = d.items.every(function(item, ii) {
+      var paidKey = di + '_' + ii;
+      var now3 = new Date();
+      var dynP2 = item.pagadas;
+      if (item.mesInicio && item.anioInicio) {
+        var mt2 = (now3.getFullYear() - item.anioInicio) * 12 +
+                  (now3.getMonth() - (MK_NUM[item.mesInicio] || 0));
+        dynP2 = Math.min(item.total, Math.max(0, mt2 + 1));
+      }
+      var extraPaid = PAID_ITEMS[paidKey] ? 1 : 0;
+      return (dynP2 + extraPaid) >= item.total;
+    });
+    if (allPaid) return ''; // hide entire card
+    var totalRestante = d.items.reduce(function(s,i,ii) {
+      var paidKey = di + '_' + ii;
+      var now2 = new Date();
+      var dynP = i.pagadas;
+      if (i.mesInicio && i.anioInicio) {
+        var mt = (now2.getFullYear() - i.anioInicio) * 12 +
+                 (now2.getMonth() - (MK_NUM[i.mesInicio] || 0));
+        dynP = Math.min(i.total, Math.max(0, mt + 1));
+      }
+      var extraPaid = PAID_ITEMS[paidKey] ? 1 : 0;
+      var rest = Math.max(0, i.total - dynP - extraPaid);
+      return s + rest * i.cuota;
+    }, 0);
+    var itemsHTML = d.items.map(function(item, ii) {
+      var paidKey = di + '_' + ii;
+      // Calculate pagadas dynamically from mesInicio/anioInicio
+      var dynPagadas = item.pagadas; // fallback to hardcoded
+      if (item.mesInicio && item.anioInicio) {
+        var now = new Date();
+        var mesesTranscurridos = (now.getFullYear() - item.anioInicio) * 12 +
+                                 (now.getMonth() - (MK_NUM[item.mesInicio] || 0));
+        dynPagadas = Math.min(item.total, Math.max(0, mesesTranscurridos + 1));
+      }
+      var extraPaid = PAID_ITEMS[paidKey] ? 1 : 0;
+      var realPagadas = Math.min(item.total, dynPagadas + extraPaid);
+      var rest = item.total - realPagadas;
+      if (rest <= 0) {
+        // If manually marked paid, show undo option
+        if (PAID_ITEMS[paidKey]) {
+          return '<div class="debt-item" style="opacity:.6">' +
+            '<div class="debt-item-header"><div>' +
+              '<div class="debt-item-name" style="text-decoration:line-through">' + item.name + '</div>' +
+              '<div class="debt-item-left" style="color:var(--green)">&#10003; Marcada como pagada manualmente</div>' +
+            '</div>' +
+            '<div class="debt-item-right">' +
+              '<button id="umb-' + di + '-' + ii + '" style="font-size:10px;padding:2px 10px;border-radius:6px;border:1px solid var(--amber);color:var(--amber);background:transparent;cursor:pointer">&#8634; Anular</button>' +
+            '</div></div>' +
+          '</div>';
+        }
+        return ''; // hide fully paid items
+      }
+      var pct  = Math.round(realPagadas / item.total * 100);
+      var bc   = pct>=80?'var(--green)':pct>=50?'var(--blue)':'var(--amber)';
+      var btnId = 'mpb-' + di + '-' + ii;
+      return '<div class="debt-item">' +
+        '<div class="debt-item-header"><div>' +
+          '<div class="debt-item-name">' + item.name + '</div>' +
+          '<div class="debt-item-left" style="color:var(--text2)">Cuota ' + (realPagadas+1) + '/' + item.total + ' &middot; liquida ' + item.liquidaMes + '</div>' +
+        '</div>' +
+        '<div class="debt-item-right">' +
+          '<div class="debt-item-cuota">' + fmt(item.cuota) + '/mes</div>' +
+          '<div class="debt-item-left">' + rest + ' cuota' + (rest>1?'s':'') + ' restante' + (rest>1?'s':'') + '</div>' +
+        '</div></div>' +
+        '<div class="debt-pbar"><div class="debt-pbar-fill" style="width:' + pct + '%;background:' + bc + '"></div></div>' +
+        '<div class="debt-pbar-labels">' +
+          '<span>' + realPagadas + ' pagadas</span>' +
+          '<span>' + fmt(rest*item.cuota) + ' pendiente</span>' +
+        '</div>' +
+        '<div style="text-align:right;margin-top:6px">' +
+          '<button id="' + btnId + '" style="font-size:11px;padding:3px 10px;border-radius:6px;border:1px solid var(--green);color:var(--green);background:transparent;cursor:pointer">&#10003; Marcar cuota pagada</button>' +
+        '</div>' +
+      '</div>';
+    }).filter(Boolean).join('');
+    // Attach markPaid + unmarkPaid handlers after render
+    setTimeout(function() {
+      d.items.forEach(function(item, ii) {
+        var btn = document.getElementById('mpb-' + di + '-' + ii);
+        if (btn) btn.addEventListener('click', function() { window.markPaid(di, ii); });
+        var ubtn = document.getElementById('umb-' + di + '-' + ii);
+        if (ubtn) ubtn.addEventListener('click', function() { window.unmarkPaid(di, ii); });
+      });
+    }, 0);
+    return '<div class="debt-card" style="animation-delay:' + (di*.08) + 's">' +
+      '<div class="debt-header">' +
+        '<div class="debt-logo" style="background:' + d.color + '">' + d.logo + '</div>' +
+        '<div class="debt-title">' +
+          '<div class="debt-name">' + d.name + '</div>' +
+          '<div class="debt-sub">' + d.items.length + ' cuota' + (d.items.length>1?'s':'') + ' activa' + (d.items.length>1?'s':'') + '</div>' +
+        '</div>' +
+        '<div><div class="debt-total" style="color:' + d.color + '">' + fmt(totalRestante) + '</div>' +
+        '<div class="debt-total-label">restante</div></div>' +
+      '</div>' +
+      itemsHTML +
+      '<div class="debt-footer"><span>Proxima cuota total</span><span>' + fmt(d.items.reduce(function(s,i){ return s+i.cuota; },0)) + '/mes</span></div>' +
+    '</div>';
+  }).filter(Boolean).join('');
+
+  // ── User cuota transactions ──────────────────────────────
+  var cuotasHTML = '';
+  if (cuotaDebtTxs.length > 0) {
+    cuotasHTML += '<div class="section-lbl" style="margin-top:16px">Cuotas registradas</div>';
+    cuotaDebtTxs.forEach(function(t) {
+      var mesInicio = MK_NUM[t.month] !== undefined ? MK_NUM[t.month] : 0;
+      var mesActual = new Date().getMonth();
+      var pagadas   = Math.max(0, Math.min(t.cuotas, mesActual - mesInicio + 1));
+      var restantes = t.cuotas - pagadas;
+      var pct       = Math.round(pagadas / t.cuotas * 100);
+      var bc        = pct>=80?'var(--green)':pct>=50?'var(--blue)':'var(--amber)';
+      var restTotal = restantes * t.cuotaValor;
+      var liquidaMes = MK_CAP[Math.min(11, (MK_NUM[t.month]||0) + t.cuotas - 1)];
+      cuotasHTML += '<div class="debt-card">' +
+        '<div class="debt-header">' +
+          '<div class="debt-logo" style="background:var(--bg3);font-size:18px;display:flex;align-items:center;justify-content:center">' +
+            (ICONS[t.cat]||'💳') + '</div>' +
+          '<div class="debt-title">' +
+            '<div class="debt-name">' + t.desc + '</div>' +
+            '<div class="debt-sub">' + t.cat + ' &middot; ' + fmt(t.cuotaValor) + '/mes</div>' +
+          '</div>' +
+          '<div><div class="debt-total" style="color:var(--blue)">' + fmt(restTotal) + '</div>' +
+          '<div class="debt-total-label">restante</div></div>' +
+        '</div>' +
+        '<div class="debt-item">' +
+          '<div class="debt-item-header"><div>' +
+            '<div class="debt-item-name">' + t.desc + '</div>' +
+            '<div class="debt-item-left" style="color:var(--text2)">Cuota ' + pagadas + '/' + t.cuotas + ' &middot; liquida ' + liquidaMes + '</div>' +
+          '</div>' +
+          '<div class="debt-item-right">' +
+            '<div class="debt-item-cuota">' + fmt(t.cuotaValor) + '/mes</div>' +
+            '<div class="debt-item-left">' + restantes + ' cuota' + (restantes>1?'s':'') + ' restantes</div>' +
+          '</div></div>' +
+          '<div class="debt-pbar"><div class="debt-pbar-fill" style="width:' + pct + '%;background:' + bc + '"></div></div>' +
+          '<div class="debt-pbar-labels"><span>' + pagadas + ' pagadas</span><span>' + fmt(restTotal) + ' pendiente</span></div>' +
+        '</div>' +
+        '<div class="debt-footer"><span>Proxima cuota</span><span>' + fmt(t.cuotaValor) + '/mes</span></div>' +
+      '</div>';
+    });
+  }
+
+  document.getElementById('debts-list').innerHTML = baseHTML + cuotasHTML;
+}
+  function toggleMes(i) {
+  mesAbierto = mesAbierto===i ? null : i;
+  renderYear();
+  if (mesAbierto!==null) {
+    setTimeout(function(){ var el=document.getElementById('mes-'+i); if(el)el.scrollIntoView({behavior:'smooth',block:'nearest'}); },80);
+  }
+}
+  window.toggleMes = toggleMes;
+
+  function renderYear() {
+  _clearCache();
+  // Dynamic month status based on current date
+  var now = new Date();
+  var curMon = now.getMonth(); // 0=Jan
+  document.getElementById('year-months').innerHTML = MESES.map(function(mes,i) {
+    // Use getSaldo for accurate chained balance
+    var bal = getSaldo(MK_NAME[i]);
+    var dynLibre = bal.libre;
+    var dynOblig = bal.oblig;
+    var dynIng   = bal.ing;
+    var pct = Math.min(100, Math.round(dynOblig / dynIng * 100));
+    var bc  = dynLibre>1400000?'var(--green)':dynLibre>700000?'var(--blue)':'var(--amber)';
+    var sc  = bc;
+    // Dynamic status
+    var dynSt = i < curMon ? 'past' : i === curMon ? 'current' : 'future';
+    var badge = dynSt==='current' ? '<span class="month-card-badge badge-current">Mes actual</span>' :
+                dynSt==='past'    ? '<span class="month-card-badge badge-past">Completado</span>' :
+                                    '<span class="month-card-badge badge-future">Proyectado</span>';
+    var isOpen=(mesAbierto===i);
+    var detailHTML='';
+    if(isOpen) {
+      // Include cuota projections in year detail
+      var cuotasEnMes = getCuotasForMonth(MK_NAME[i]);
+      // Get manual transactions for this month
+      var mesKey = MK_NAME[i];
+      var manTxs = DB.transactions.filter(function(t){ return t.month === mesKey && t.id >= 30; });
+      var manIngresos = manTxs.filter(function(t){ return t.type === 'ingreso'; });
+      var manGastos   = manTxs.filter(function(t){ return t.type === 'gasto' && (!t.cuotas || t.cuotas < 2); });
+      // Use getSaldo values (already includes manual txs + cuotas)
+      var totalIngDyn  = dynIng;
+      var totalObligDyn = dynOblig;
+
+      detailHTML='<div class="md-section">Ingresos</div>'+
+        mes.ingresos.map(function(r){ return '<div class="md-row ingreso-row"><div class="md-label"><span class="md-label-icon">'+r.i+'</span>'+r.n+'</div><div class="md-val">+'+fmt(r.v)+'</div></div>'; }).join('')+
+        // Saldo anterior as income line
+        (bal.saldoAnterior > 0 ? '<div class="md-row ingreso-row"><div class="md-label"><span class="md-label-icon">💰</span>Saldo mes anterior</div><div class="md-val">+'+fmt(bal.saldoAnterior)+'</div></div>' : '')+
+        // Manual income entries
+        manIngresos.map(function(t){ return '<div class="md-row ingreso-row"><div class="md-label"><span class="md-label-icon">'+( ICONS[t.cat]||'💵')+'</span>'+t.desc+'</div><div class="md-val" style="color:var(--green)">+'+fmt(t.amount)+'</div></div>'; }).join('')+
+        '<div class="md-row total-row"><div class="md-label">Total ingresos</div><div class="md-val" style="color:var(--green)">+'+fmt(totalIngDyn)+'</div></div>';
+      if(mes.cubiertos&&mes.cubiertos.length) {
+        detailHTML+='<div class="md-section">Cubiertos con reserva anterior</div>'+
+          mes.cubiertos.map(function(r){ return '<div class="md-row"><div class="md-label"><span class="md-label-icon">'+r.i+'</span>'+r.n+'</div><div class="md-val" style="color:var(--green)">&#10003; '+fmt(r.v)+'</div></div>'; }).join('');
+      }
+      detailHTML+='<div class="md-section">Obligaciones</div>'+
+        mes.gastos.map(function(r){ return '<div class="md-row gasto-row"><div class="md-label"><span class="md-label-icon">'+r.i+'</span>'+r.n+'</div><div class="md-val">-'+fmt(r.v)+'</div></div>'; }).join('')+
+        // Manual gastos entries
+        manGastos.map(function(t){ return '<div class="md-row gasto-row"><div class="md-label"><span class="md-label-icon">'+(ICONS[t.cat]||'💸')+'</span>'+t.desc+'</div><div class="md-val" style="color:var(--red)">-'+fmt(t.amount)+'</div></div>'; }).join('')+
+        // Cuotas proyectadas en este mes
+        cuotasEnMes.map(function(ct){ return '<div class="md-row gasto-row"><div class="md-label"><span class="md-label-icon">'+(ICONS[ct.cat]||'💳')+'</span>'+ct.desc+' ('+ct.cuotaNum+'/'+ct.cuotas+')</div><div class="md-val" style="color:var(--red)">-'+fmt(ct.cuotaVal)+'</div></div>'; }).join('')+
+        '<div class="md-row total-row"><div class="md-label">Total obligaciones</div><div class="md-val" style="color:var(--red)">-'+fmt(totalObligDyn)+'</div></div>';
+      if(mes.reserva>0) {
+        detailHTML+='<div class="md-section">Reserva para mes siguiente</div>'+
+          '<div class="md-row reserva-row"><div class="md-label"><span class="md-label-icon">📦</span>Apartar del salario</div><div class="md-val">-'+fmt(mes.reserva)+'</div></div>';
+      }
+      if(mes.nota) {
+        detailHTML+='<div style="margin:8px 16px 4px;padding:9px 12px;background:var(--bg3);border-radius:8px;font-size:11px;color:var(--text2);line-height:1.5">💡 '+mes.nota+'</div>';
+      }
+      detailHTML+='<div class="md-row libre-row" style="background:'+(dynLibre>1400000?'rgba(0,229,160,.06)':dynLibre>700000?'rgba(77,159,255,.06)':'rgba(255,179,71,.06)')+'">'+
+        '<div class="md-label">Saldo libre final</div><div class="md-val" style="color:'+sc+'">'+fmt(dynLibre)+'</div></div>';
+    }
+    return '<div class="month-card '+dynSt+'" id="mes-'+i+'" style="animation-delay:'+(i*.03)+'s">'+
+      '<div class="month-card-head" id="mch-'+i+'">'+
+      '<div class="month-card-left"><div class="month-card-name">'+mes.m+' '+badge+' <span class="md-chevron'+(isOpen?' open':'')+'">▼</span></div>'+
+      '<div class="month-card-sub">Ingreso '+fmt(mes.ing)+' · Oblig. '+pct+'%</div></div>'+
+      '<div class="month-card-numbers"><div class="month-card-saldo" style="color:'+sc+'">'+fmt(dynLibre)+'</div><div class="month-card-detail">saldo libre</div></div></div>'+
+      '<div class="month-pbar"><div class="month-pbar-fill" style="width:'+pct+'%;background:'+bc+'"></div></div>'+
+      '<div class="month-detail'+(isOpen?' open':'')+'">'+detailHTML+'</div></div>';
+  }).join('');
+  MESES.forEach(function(mes, i) {
+    var head = document.getElementById('mch-' + i);
+    if (head) head.addEventListener('click', function() { window.toggleMes(i); });
+  });
+}
+  function renderHistory() {
+    var allMonths = ['todos','enero','febrero','marzo','abril','mayo','junio','julio',
+                     'agosto','septiembre','octubre','noviembre','diciembre'];
+    // Build pills with IDs — use addEventListener after DOM insert
+    var pillsHTML = '';
+    allMonths.forEach(function(m) {
+      var active = filterMonth === m ? ' active' : '';
+      var label = m.charAt(0).toUpperCase() + m.slice(1);
+      pillsHTML += '<button class="pill' + active + '" id="hp-' + m + '">' + label + '</button>';
+    });
+    document.getElementById('hist-pills').innerHTML = pillsHTML;
+    // Attach click handlers
+    allMonths.forEach(function(m) {
+      var btn = document.getElementById('hp-' + m);
+      if (btn) btn.addEventListener('click', function() { filterMonth = m; renderHistory(); });
+    });
+
+    var filtered = filterMonth === 'todos'
+      ? DB.transactions
+      : DB.transactions.filter(function(t) { return t.month === filterMonth; });
+    var sorted = filtered.slice().reverse();
+
+    var html = '';
+    sorted.forEach(function(t, i) {
+      var src = t.source === 'gmail'   ? '<span class="badge badge-new">Gmail</span>'
+              : t.source === 'app-nu'  ? '<span class="badge badge-app">Nu</span>' : '';
+      var cuotaBadge = (t.cuotas && t.cuotas >= 2) ? '<span class="badge badge-cont">' + t.cuotas + ' cuotas</span>' : '';
+      var cuotaMeta  = (t.cuotas && t.cuotas >= 2) ? ' - cuota: ' + fmt(t.cuotaValor) + '/mes' : '';
+      var safeDesc = (t.desc || '').replace(/"/g, '&quot;');
+      html += '<div class="hist-item" style="animation-delay:' + (Math.min(i,8)*0.04) + 's" id="hi-' + t.id + '">' +
+        '<div class="hist-icon">' + (ICONS[t.cat] || '💸') + '</div>' +
+        '<div class="hist-info">' +
+          '<div class="hist-name">' + t.desc + src + cuotaBadge + '</div>' +
+          '<div class="hist-meta">' + (t.date||'') + ' - ' + t.cat + ' - ' + t.month + cuotaMeta + '</div>' +
+        '</div>' +
+        '<div class="hist-val ' + t.type + '">' + (t.type==='ingreso'?'+':'-') + fmt(t.amount) + '</div>' +
+        '<div style="display:flex;gap:5px;flex-shrink:0;margin-left:4px">' +
+          '<div class="act-btn act-btn-edit" id="edit-' + t.id + '">&#9999;&#65039;</div>' +
+          '<div class="act-btn act-btn-del" id="del-' + t.id + '">&#128465;</div>' +
+        '</div>' +
+      '</div>';
+    });
+
+    document.getElementById('hist-list').innerHTML = html || '<div class="empty"><div class="empty-icon">&#128202;</div><div style="font-size:13px;color:var(--text3)">Sin movimientos</div></div>';
+
+    // Attach edit/delete handlers
+    sorted.forEach(function(t) {
+      var editBtn = document.getElementById('edit-' + t.id);
+      var delBtn  = document.getElementById('del-' + t.id);
+      if (editBtn) editBtn.addEventListener('click', function() { window.openEdit(t.id); });
+      if (delBtn)  delBtn.addEventListener('click',  function() { window.askDel(t.id, t.desc); });
+    });
+  }
+  var filterMonth = 'todos';
+  function setFilter(m) { filterMonth = m; renderHistory(); }
+  window.setFilter = setFilter;
+
+  function renderAll() {
+    _clearCache();   // Clear saldo cache so all months recalculate fresh
+    renderHome();
+    renderHistory();
+    renderYear();
+    renderDebts();
+  }
+
+    function renderHome() {
+    _clearCache(); // Fresh saldo calculation
+    // Pills
+    document.getElementById('home-pills').innerHTML = MKS.map(function(m, i) {
+      return '<button class="pill ' + (homeMonth === m ? 'active' : '') + '" onclick="setHomeMonth(\'' + m + '\')">' + MN[i] + '</button>';
+    }).join('');
+
+    var bal = getSaldo(homeMonth);
+    var idx = MK[homeMonth] !== undefined ? MK[homeMonth] : 3;
+    var nxt = MESES[idx + 1];
+    var col = bal.libre >= 1200000 ? 'var(--green)' : bal.libre >= 400000 ? 'var(--blue)' : bal.libre >= 0 ? 'var(--amber)' : 'var(--red)';
+
+    document.getElementById('home-amount').textContent = fmt(bal.libre);
+    document.getElementById('home-amount').style.color = col;
+    document.getElementById('home-label').textContent  = 'Saldo disponible - ' + bal.base.m + ' 2026';
+    document.getElementById('home-tx-lbl').textContent = 'Ultimas transacciones - ' + bal.base.m;
+    var saLabel  = bal.saldoAnterior > 0 ? 'color:var(--green)' : bal.saldoAnterior < 0 ? 'color:var(--red)' : '';
+    document.getElementById('home-row').innerHTML =
+      '<div class="hero-sub"><div class="hero-sub-label">Ingreso base</div><div class="hero-sub-val">' + fmt(bal.base.ing) + '</div></div>' +
+      '<div class="hero-sub"><div class="hero-sub-label">Obligaciones</div><div class="hero-sub-val">' + fmt(bal.oblig) + '</div></div>' +
+      '<div class="hero-sub"><div class="hero-sub-label">Saldo mes ant.</div><div class="hero-sub-val" style="' + saLabel + '">' + (bal.saldoAnterior !== 0 ? fmt(bal.saldoAnterior) : '-') + '</div></div>';
+
+    var pO = Math.min(100, Math.round(bal.oblig / bal.ing * 100));
+    var pR = bal.reserva > 0 ? Math.round(bal.reserva / bal.ing * 100) : 0;
+    var pL = Math.max(0, 100 - pO - pR);
+    var lc = pL >= 40 ? 'var(--green)' : pL >= 20 ? 'var(--blue)' : 'var(--amber)';
+    document.getElementById('home-bar').innerHTML =
+      '<div class="dist-seg" style="width:' + pO + '%;background:var(--red);border-radius:3px 0 0 3px"></div>' +
+      '<div class="dist-seg" style="width:' + pR + '%;background:var(--amber)"></div>' +
+      '<div class="dist-seg" style="width:' + pL + '%;background:' + lc + ';border-radius:0 3px 3px 0"></div>';
+    document.getElementById('home-legend').innerHTML =
+      '<div class="dist-leg"><div class="dist-dot" style="background:var(--red)"></div>Obligaciones ' + pO + '%</div>' +
+      (pR > 0 ? '<div class="dist-leg"><div class="dist-dot" style="background:var(--amber)"></div>Reserva ' + pR + '%</div>' : '') +
+      '<div class="dist-leg"><div class="dist-dot" style="background:' + lc + '"></div>Libre ' + pL + '%</div>';
+    // Dynamic alert for abril: Davivienda vence 25 abr pero salario llega 30 abr
+    // Lo que puede cubrir Davivienda = saldo libre de abril (que ya incluye carryover de meses anteriores)
+    // El saldo libre de abril ya tiene el carryover sumado — si ese saldo >= 424300, hay dinero suficiente
+    var alertHTML = '';
+    if (homeMonth === 'abril') {
+      // disponible = saldo libre real de marzo (cadena recursiva completa)
+      var daviPago   = 424300;
+      var disponible = bal.saldoAnterior;
+      var deficit    = daviPago - disponible;
+      if (deficit > 0) {
+        alertHTML = '<div class="alert-box alert-amber"><span>&#9888;&#65039;</span>' +
+          '<div class="alert-text"><strong>Davivienda vence el 25 abr</strong> - 5 dias antes del salario (30 abr). ' +
+          'Saldo disponible de meses anteriores: <strong>' + fmt(Math.max(0, disponible)) + '</strong>. ' +
+          'Deficit: <strong>' + fmt(deficit) + '</strong></div></div>';
+      } else {
+        alertHTML = '<div class="alert-box" style="background:var(--gdim);border:1px solid var(--gborder);' +
+          'margin:0 16px 8px;padding:10px 13px;border-radius:var(--rs);display:flex;gap:8px">' +
+          '<span>&#9989;</span><div style="font-size:12px;color:var(--green);line-height:1.5">' +
+          '<strong>Davivienda cubierta</strong> - Saldo disponible (' + fmt(disponible) + ') es suficiente para el pago del 25 abr.</div></div>';
+      }
+    }
+    document.getElementById('home-alert').innerHTML = alertHTML;
+
+    var rec = DB.transactions.filter(function(t) { return t.month === homeMonth; }).slice().reverse().slice(0, 6);
+    document.getElementById('home-recent').innerHTML = rec.length ? rec.map(function(t) {
+      var src = t.source === 'gmail' ? '<span class="badge badge-new">Gmail</span>' : t.source === 'app-nu' ? '<span class="badge badge-app">Nu</span>' : '';
+      return '<div class="hist-item"><div class="hist-icon">' + (ICONS[t.cat] || '💸') + '</div>' +
+        '<div class="hist-info"><div class="hist-name">' + t.desc + src + '</div><div class="hist-meta">' + (t.date || '') + ' - ' + t.cat + '</div></div>' +
+        '<div class="hist-val ' + t.type + '">' + (t.type === 'ingreso' ? '+' : '-') + fmt(t.amount) + '</div></div>';
+    }).join('') : '<div class="empty"><div class="empty-icon">&#128202;</div><div style="font-size:12px;color:var(--text3)">Sin movimientos en ' + bal.base.m + '</div></div>';
+  }
+
+  // ── TARJETAS ─────────────────────────────────────────────────
+  // ── CORTE CONFIG ──────────────────────────────────────────────
+  var CORTES = { RappiCard: 19, Davivienda: 8, Nu: 14, CMR: 24 };
+  var MK_NUM = { enero:0,febrero:1,marzo:2,abril:3,mayo:4,junio:5,julio:6,agosto:7,septiembre:8,octubre:9,noviembre:10,diciembre:11 };
+  var MK_NAME = ['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'];
+  var MK_CAP  = ['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
+
+  function calcMesDesdeCorte(fechaStr, cat) {
+    if (!fechaStr) return null;
+    var parts = fechaStr.split('-');
+    var mon = parseInt(parts[1]) - 1, day = parseInt(parts[2]);
+    var corte = CORTES[cat];
+    if (!corte) return { mes: MK_NAME[mon], explicacion: 'Mes de la fecha de compra (sin corte)' };
+    var mesCobro, expl;
+    if (day <= corte) {
+      mesCobro = mon;
+      expl = 'Dia ' + day + ', dentro del corte ' + corte + ' de ' + MK_CAP[mon] + '. Cobro en ' + MK_CAP[mon] + '.';
+    } else {
+      mesCobro = (mon + 1) % 12;
+      expl = 'Dia ' + day + ', post-corte ' + corte + ' de ' + MK_CAP[mon] + '. Cobro en ' + MK_CAP[mesCobro] + '.';
+    }
+    return { mes: MK_NAME[mesCobro], explicacion: expl };
+  }
+
+  window.calcMesSugerido = function() {
+    var fecha = document.getElementById('f-fecha').value;
+    var cat   = document.getElementById('f-cat').value;
+    var res   = calcMesDesdeCorte(fecha, cat);
+    if (!res) return;
+    var sel = document.getElementById('f-mes');
+    for (var i = 0; i < sel.options.length; i++) {
+      if (sel.options[i].value === res.mes) { sel.selectedIndex = i; break; }
+    }
+    document.getElementById('mes-explicacion').textContent = res.explicacion;
+    document.getElementById('mes-sugerido-badge').textContent = 'sugerido - puedes cambiarlo';
+  };
+
+  window.openModal = function() {
+    var now = new Date();
+    var y = now.getFullYear(), m = String(now.getMonth()+1).padStart(2,'0'), d = String(now.getDate()).padStart(2,'0');
+    document.getElementById('f-fecha').value = y + '-' + m + '-' + d;
+    document.getElementById('m-add').classList.add('open');
+    calcMesSugerido();
+    document.getElementById('f-desc').focus();
+  };
+  window.closeAdd = function() {
+    document.getElementById('m-add').classList.remove('open');
+    document.getElementById('f-desc').value = '';
+    document.getElementById('f-amt').value  = '';
+    document.getElementById('mes-explicacion').textContent = '';
+    document.getElementById('mes-sugerido-badge').textContent = 'calculado automaticamente';
+    var chk = document.getElementById('f-escuotas');
+    if (chk) { chk.checked = false; document.getElementById('f-cuotas-wrap').style.display = 'none'; }
+    var nc = document.getElementById('f-ncuotas');
+    if (nc) nc.value = '';
+  };
+  window.addTx = function() {
+    var desc  = document.getElementById('f-desc').value.trim();
+    var amt   = parseFloat(document.getElementById('f-amt').value);
+    var type  = document.getElementById('f-type').value;
+    var cat   = document.getElementById('f-cat').value;
+    var mes   = document.getElementById('f-mes').value;
+    var fecha = document.getElementById('f-fecha').value;
+    if (!desc || isNaN(amt) || amt <= 0) {
+      document.getElementById('f-desc').style.borderColor = 'var(--red)';
+      setTimeout(function() { document.getElementById('f-desc').style.borderColor = ''; }, 1500);
+      return;
+    }
+    // Format date for display
+    var dateDisplay = '';
+    if (fecha) {
+      var p = fecha.split('-');
+      var mn2 = ['ene','feb','mar','abr','may','jun','jul','ago','sep','oct','nov','dic'];
+      dateDisplay = parseInt(p[2]) + ' ' + mn2[parseInt(p[1])-1];
+    } else {
+      var now2 = new Date();
+      var mn3 = ['ene','feb','mar','abr','may','jun','jul','ago','sep','oct','nov','dic'];
+      dateDisplay = now2.getDate() + ' ' + mn3[now2.getMonth()];
+    }
+    var esCuotas = document.getElementById('f-escuotas') && document.getElementById('f-escuotas').checked;
+    var nCuotas  = esCuotas ? parseInt(document.getElementById('f-ncuotas').value) : 0;
+    var txObj = { id: DB.nextId++, desc: desc, amount: amt, type: type, cat: cat, month: mes, date: dateDisplay, fechaISO: fecha };
+    if (esCuotas && nCuotas >= 2) {
+      txObj.cuotas     = nCuotas;
+      txObj.cuotaValor = Math.round(amt / nCuotas);
+      txObj.amount     = amt; // total
+    }
+    DB.transactions.push(txObj);
+    saveDB();
+    homeMonth = mes;
+    closeAdd(); renderAll();
+  };
+
+  // ── TARJETAS CON FILTRO POR MES ────────────────────────────
+  var cardsMonth = 'abril';
+  window.setCardsMonth = function(m) { cardsMonth = m; renderCards(); };
+
+  function renderCards() {
+    // Pills - use data-month attribute to avoid quote issues in onclick
+    var pillsHTML = '';
+    MK_NAME.forEach(function(m, i) {
+      var active = cardsMonth === m ? ' active' : '';
+      pillsHTML += '<button class="pill' + active + '" data-month="' + m + '" id="cp-' + m + '">' + MN[i] + '</button>';
+    });
+    document.getElementById('cards-month-pills').innerHTML = pillsHTML;
+    // Attach click handlers after DOM insert
+    MK_NAME.forEach(function(m) {
+      var btn = document.getElementById('cp-' + m);
+      if (btn) btn.addEventListener('click', function() { setCardsMonth(m); });
+    });
+    document.getElementById('cards-sub').textContent = 'Movimientos de ' + MK_CAP[MK_NUM[cardsMonth]] + ' 2026';
+
+    var catMap = { rc:'RappiCard', dv:'Davivienda', nu:'Nu', cmr:'CMR' };
+    var extractoMes = { rc:'abril', dv:'abril', nu:'mayo', cmr:'marzo' };
+    var html = '';
+
+    CARDS.forEach(function(card, ci) {
+      var catName = catMap[card.id];
+      // Regular txs for this month (excluding cuota-madre which spans months)
+      var userTxs = DB.transactions.filter(function(t) {
+        return t.month === cardsMonth && t.cat === catName && t.type === 'gasto' && (!t.cuotas || t.cuotas < 2);
+      });
+      // Add cuota projections for this card/month
+      var cuotasTxs = getCuotasForMonth(cardsMonth).filter(function(ct) { return ct.cat === catName; });
+      var showBase = (cardsMonth === extractoMes[card.id]);
+      // CMR: for months abril-noviembre show cuota avance as base tx
+      var CMR_AVANCE_MESES = ['abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre'];
+      var showCMRAvance = (card.id === 'cmr' && CMR_AVANCE_MESES.indexOf(cardsMonth) >= 0);
+      // Keep showCMRAbril for backward compat (same as showCMRAvance for abril)
+      var showCMRAbril = showCMRAvance;
+
+      // Base txs HTML
+      var baseTxsHTML = '';
+      if (showCMRAvance) {
+        // CMR: show cuota avance for this month
+        var avanceMesNum = CMR_AVANCE_MESES.indexOf(cardsMonth) + 2; // abril=2/9, mayo=3/9...
+        var venceCMR = MK_CAP[MK_NUM[cardsMonth] + 1] ? '10 ' + MK_CAP[MK_NUM[cardsMonth] + 1] : '10 dic';
+        baseTxsHTML += '<div class="tcard-tx">' +
+          '<div class="tcard-tx-icon">&#127970;</div>' +
+          '<div class="tcard-tx-info">' +
+            '<div class="tcard-tx-name">Avance CMR cuota ' + avanceMesNum + '/9' +
+              '<span class="badge badge-cont">continua</span></div>' +
+            '<div class="tcard-tx-meta">Avance $2.745.000 - vence ' + venceCMR + '</div>' +
+          '</div>' +
+          '<div class="tcard-tx-val">' + fmt(305000) + '</div>' +
+        '</div>';
+      } else if (showBase) {
+        card.txs.filter(function(t){ return t.v !== 0; }).forEach(function(t) {
+          var b = t.b==='new'  ? '<span class="badge badge-new">nuevo</span>'  :
+                  t.b==='last' ? '<span class="badge badge-last">ultima</span>' :
+                  t.b==='cont' ? '<span class="badge badge-cont">continua</span>' :
+                  t.b==='app'  ? '<span class="badge badge-app">app</span>' : '';
+          var tipo = t.b==='cont' ? '<span style="font-size:10px;color:var(--amber)"> cuota</span>'
+                   : t.b==='last' ? '<span style="font-size:10px;color:var(--green)"> unico/ultima</span>'
+                   : '<span style="font-size:10px;color:var(--text3)"> pago unico</span>';
+          baseTxsHTML += '<div class="tcard-tx' + (t.isNew ? ' new-tx' : '') + '">' +
+            '<div class="tcard-tx-icon">' + t.i + '</div>' +
+            '<div class="tcard-tx-info">' +
+              '<div class="tcard-tx-name">' + t.n + b + '</div>' +
+              '<div class="tcard-tx-meta">' + t.m + tipo + '</div>' +
+            '</div>' +
+            '<div class="tcard-tx-val"' + (t.v<0?' style="color:var(--green)"':'') + '>' +
+              (t.v<0?'-':'') + fmt(Math.abs(t.v)) +
+            '</div></div>';
+        });
+      }
+
+      // User txs HTML
+      var userTxsHTML = '';
+      userTxs.forEach(function(t) {
+        var src = t.source==='gmail' ? '<span class="badge badge-new">Gmail</span>'
+                : t.source==='app-nu' ? '<span class="badge badge-app">Nu</span>' : '';
+        userTxsHTML += '<div class="tcard-tx">' +
+          '<div class="tcard-tx-icon">' + (ICONS[t.cat]||'💸') + '</div>' +
+          '<div class="tcard-tx-info">' +
+            '<div class="tcard-tx-name">' + t.desc + src + '</div>' +
+            '<div class="tcard-tx-meta">' + (t.date||'') + ' &middot; pago unico</div>' +
+          '</div>' +
+          '<div class="tcard-tx-val" style="color:var(--red)">-' + fmt(t.amount) + '</div>' +
+        '</div>';
+      });
+
+      // Cuotas HTML
+      var cuotasHTML = '';
+      cuotasTxs.forEach(function(ct) {
+        cuotasHTML += '<div class="tcard-tx">' +
+          '<div class="tcard-tx-icon">' + (ICONS[ct.cat]||'💸') + '</div>' +
+          '<div class="tcard-tx-info">' +
+            '<div class="tcard-tx-name">' + ct.desc +
+              '<span class="badge badge-cont">cuota ' + ct.cuotaNum + '/' + ct.cuotas + '</span></div>' +
+            '<div class="tcard-tx-meta">' + ct.date + ' &middot; ' + fmt(ct.total) + ' total</div>' +
+          '</div>' +
+          '<div class="tcard-tx-val" style="color:var(--red)">-' + fmt(ct.cuotaVal) + '</div>' +
+        '</div>';
+      });
+      var cuotasGroup = cuotasTxs.length > 0 ?
+        '<div class="group-label" style="padding:5px 15px;font-size:10px;font-weight:600;color:var(--text3);background:var(--bg3);text-transform:uppercase">Cuotas proyectadas</div>' : '';
+
+      var hasContent = showBase || showCMRAvance || userTxs.length > 0 || cuotasTxs.length > 0;
+      var emptyMsg = hasContent ? '' :
+        '<div style="padding:16px;font-size:12px;color:var(--text3);text-align:center">Sin transacciones en ' + MK_CAP[MK_NUM[cardsMonth]] + '</div>';
+      var cuotasTotal = cuotasTxs.reduce(function(s,ct){return s+ct.cuotaVal;},0);
+      var totalShow = showCMRAvance
+        ? (305000 + userTxs.reduce(function(s,t){return s+t.amount;},0) + cuotasTotal)
+        : showBase
+          ? (card.amount + cuotasTotal)
+          : (userTxs.reduce(function(s,t){return s+t.amount;},0) + cuotasTotal);
+      var avanceMesLabel = showCMRAvance ? ('cuota ' + (CMR_AVANCE_MESES.indexOf(cardsMonth)+2) + '/9 avance') : '';
+      var minLabel = showCMRAvance ? avanceMesLabel : showBase ? card.minLabel : (userTxs.length + ' compra' + (userTxs.length!==1?'s':''));
+      var baseGroup = (showBase && baseTxsHTML) ?
+        '<div class="group-label" style="padding:5px 15px;font-size:10px;font-weight:600;color:var(--text3);background:var(--bg3);text-transform:uppercase">Extracto ' + MK_CAP[MK_NUM[cardsMonth]] + '</div>' : '';
+      var userGroup = userTxs.length > 0 ?
+        '<div class="group-label" style="padding:5px 15px;font-size:10px;font-weight:600;color:var(--text3);background:var(--bg3);text-transform:uppercase">Compras registradas</div>' : '';
+      var totalRow = hasContent ?
+        '<div class="tcard-total"><span>Total ' + MK_CAP[MK_NUM[cardsMonth]] + '</span><span style="color:' + card.color + '">' + fmt(totalShow) + '</span></div>' : '';
+
+      // Use data-cardid attribute — no quotes needed in onclick
+      html += '<div class="tcard" style="animation-delay:' + (ci*0.07) + 's">' +
+        '<div class="tcard-head" data-cardid="' + card.id + '" id="thead-' + card.id + '">' +
+          '<div class="tcard-logo" style="background:' + card.color + '">' + card.logo + '</div>' +
+          '<div class="tcard-info">' +
+            '<div class="tcard-name">' + card.name + '</div>' +
+            '<div class="tcard-sub">' + card.sub + '</div>' +
+          '</div>' +
+          '<div class="tcard-right">' +
+            '<div class="tcard-amount" style="color:' + card.color + '">' + fmt(totalShow) + '</div>' +
+            '<div class="tcard-min">' + minLabel + '</div>' +
+          '</div>' +
+          '<div id="tch-' + card.id + '" style="color:var(--text3);margin-left:5px;font-size:11px">&#9660;</div>' +
+        '</div>' +
+        '<div class="tcard-body" id="tbody-' + card.id + '">' +
+          baseGroup + baseTxsHTML + userGroup + userTxsHTML + cuotasGroup + cuotasHTML + emptyMsg + totalRow +
+        '</div>' +
+      '</div>';
+    });
+
+    document.getElementById('cards-list').innerHTML = html;
+
+    // Attach click handlers to card heads after DOM insert
+    CARDS.forEach(function(card) {
+      var head = document.getElementById('thead-' + card.id);
+      if (head) head.addEventListener('click', function() { tcToggle(card.id); });
+    });
+  }
+  window.tcToggle = function(id) {
+    var b = document.getElementById('tbody-' + id);
+    var ch = document.getElementById('tch-' + id);
+    if (!b || !ch) return;
+    b.classList.toggle('open');
+    ch.innerHTML = b.classList.contains('open') ? '&#9650;' : '&#9660;';
+  };
+
+
+
+  window.openModal = function() { document.getElementById('m-add').classList.add('open'); document.getElementById('f-desc').focus(); };
+  window.closeAdd  = function() {
+    document.getElementById('m-add').classList.remove('open');
+    document.getElementById('f-desc').value = '';
+    document.getElementById('f-amt').value  = '';
+  };
+  // ── CORTE CONFIG ──────────────────────────────────────────────
+  var CORTES = { RappiCard: 19, Davivienda: 8, Nu: 14, CMR: 24 };
+  var MK_NUM  = { enero:0,febrero:1,marzo:2,abril:3,mayo:4,junio:5,julio:6,agosto:7,septiembre:8,octubre:9,noviembre:10,diciembre:11 };
+  var MK_NAME = ['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'];
+  var MK_CAP  = ['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
+
+  function calcMesDesdeCorte(fechaStr, cat) {
+    if (!fechaStr) return null;
+    var parts = fechaStr.split('-');
+    var mon = parseInt(parts[1]) - 1, day = parseInt(parts[2]);
+    var corte = CORTES[cat];
+    if (!corte) return { mes: MK_NAME[mon], explicacion: 'Mes de la fecha de compra (sin corte aplicado)' };
+    var mesCobro, expl;
+    if (day <= corte) {
+      mesCobro = mon;
+      expl = 'Dia ' + day + ' (dentro de corte ' + corte + ') cobro en ' + MK_CAP[mon];
+    } else {
+      mesCobro = (mon + 1) % 12;
+      expl = 'Dia ' + day + ' post-corte ' + corte + ' de ' + MK_CAP[mon] + ', cobro en ' + MK_CAP[mesCobro];
+    }
+    return { mes: MK_NAME[mesCobro], explicacion: expl };
+  }
+
+  window.calcMesSugerido = function() {
+    var fecha = document.getElementById('f-fecha').value;
+    var cat   = document.getElementById('f-cat').value;
+    var res   = calcMesDesdeCorte(fecha, cat);
+    if (!res) return;
+    var sel = document.getElementById('f-mes');
+    for (var i = 0; i < sel.options.length; i++) {
+      if (sel.options[i].value === res.mes) { sel.selectedIndex = i; break; }
+    }
+    document.getElementById('mes-explicacion').textContent = res.explicacion;
+    document.getElementById('mes-sugerido-badge').textContent = 'sugerido - puedes cambiarlo';
+  };
+
+  window.openModal = function() {
+    var now = new Date();
+    var y = now.getFullYear(), m = String(now.getMonth()+1).padStart(2,'0'), d = String(now.getDate()).padStart(2,'0');
+    document.getElementById('f-fecha').value = y + '-' + m + '-' + d;
+    // Reset cuotas toggle
+    var chk = document.getElementById('f-escuotas');
+    if (chk) { chk.checked = false; document.getElementById('f-cuotas-wrap').style.display = 'none'; }
+    calcMesSugerido();
+    document.getElementById('m-add').classList.add('open');
+    document.getElementById('f-desc').focus();
+    // Wire cuotas toggle
+    if (chk && !chk._wired) {
+      chk._wired = true;
+      chk.addEventListener('change', function() {
+        document.getElementById('f-cuotas-wrap').style.display = chk.checked ? 'block' : 'none';
+      });
+    }
+  };
+  window.closeAdd = function() {
+    document.getElementById('m-add').classList.remove('open');
+    document.getElementById('f-desc').value = '';
+    document.getElementById('f-amt').value  = '';
+    document.getElementById('mes-explicacion').textContent = '';
+    document.getElementById('mes-sugerido-badge').textContent = 'calculado automaticamente';
+    var chk = document.getElementById('f-escuotas');
+    if (chk) { chk.checked = false; document.getElementById('f-cuotas-wrap').style.display = 'none'; }
+    var nc = document.getElementById('f-ncuotas');
+    if (nc) nc.value = '';
+  };
+  window.addTx = function() {
+    var desc  = document.getElementById('f-desc').value.trim();
+    var amt   = parseFloat(document.getElementById('f-amt').value);
+    var type  = document.getElementById('f-type').value;
+    var cat   = document.getElementById('f-cat').value;
+    var mes   = document.getElementById('f-mes').value;
+    var fecha = document.getElementById('f-fecha').value;
+    if (!desc || isNaN(amt) || amt <= 0) {
+      document.getElementById('f-desc').style.borderColor = 'var(--red)';
+      setTimeout(function() { document.getElementById('f-desc').style.borderColor = ''; }, 1500);
+      return;
+    }
+    var dateDisplay = '';
+    if (fecha) {
+      var p2 = fecha.split('-');
+      var mn2 = ['ene','feb','mar','abr','may','jun','jul','ago','sep','oct','nov','dic'];
+      dateDisplay = parseInt(p2[2]) + ' ' + mn2[parseInt(p2[1])-1];
+    } else {
+      var now2 = new Date();
+      var mn3 = ['ene','feb','mar','abr','may','jun','jul','ago','sep','oct','nov','dic'];
+      dateDisplay = now2.getDate() + ' ' + mn3[now2.getMonth()];
+    }
+    var esCuotas = document.getElementById('f-escuotas') && document.getElementById('f-escuotas').checked;
+    var nCuotas  = esCuotas ? parseInt(document.getElementById('f-ncuotas').value) : 0;
+    var txObj = { id: DB.nextId++, desc: desc, amount: amt, type: type, cat: cat, month: mes, date: dateDisplay, fechaISO: fecha };
+    if (esCuotas && nCuotas >= 2) {
+      txObj.cuotas     = nCuotas;
+      txObj.cuotaValor = Math.round(amt / nCuotas);
+      txObj.amount     = amt; // total
+    }
+    DB.transactions.push(txObj);
+    saveDB();
+    homeMonth = mes;
+    closeAdd(); renderAll();
+  };
+
+  // ── DELETE ───────────────────────────────────────────────────
+  var delId = null;
+  window.askDel = function(id, desc) {
+    delId = id;
+    document.getElementById('confirm-txt').textContent = 'Eliminar "' + desc + '"?';
+    document.getElementById('m-confirm').classList.add('open');
+  };
+  window.closeConfirm = function() { document.getElementById('m-confirm').classList.remove('open'); delId = null; };
+  window.doDelete = function() {
+    if (delId === null) return;
+    DB.transactions = DB.transactions.filter(function(t) { return t.id !== delId; });
+    saveDB(); closeConfirm(); renderAll();
+  };
+
+  // ── EDITAR ───────────────────────────────────────────────────
+  var editId = null;
+  window.openEdit = function(id) {
+    var t = DB.transactions.find(function(x) { return x.id === id; });
+    if (!t) return;
+    editId = id;
+    document.getElementById('e-desc').value = t.desc;
+    document.getElementById('e-amt').value  = t.amount;
+    document.getElementById('e-type').value = t.type;
+    document.getElementById('e-cat').value  = t.cat   || 'Otro';
+    document.getElementById('e-mes').value  = t.month || 'abril';
+    document.getElementById('m-edit').classList.add('open');
+    document.getElementById('e-desc').focus();
+  };
+  window.closeEdit = function() { document.getElementById('m-edit').classList.remove('open'); editId = null; };
+  window.saveEdit = function() {
+    if (editId === null) return;
+    var desc = document.getElementById('e-desc').value.trim();
+    var amt  = parseFloat(document.getElementById('e-amt').value);
+    if (!desc || isNaN(amt) || amt <= 0) {
+      document.getElementById('e-desc').style.borderColor = 'var(--red)';
+      setTimeout(function() { document.getElementById('e-desc').style.borderColor = ''; }, 1500);
+      return;
+    }
+    var idx = DB.transactions.findIndex(function(t) { return t.id === editId; });
+    if (idx === -1) return;
+    DB.transactions[idx] = {
+      id:      DB.transactions[idx].id,
+      desc:    desc,
+      amount:  amt,
+      type:    document.getElementById('e-type').value,
+      cat:     document.getElementById('e-cat').value,
+      month:   document.getElementById('e-mes').value,
+      date:    DB.transactions[idx].date || '',
+      source:  DB.transactions[idx].source || '',
+      fechaISO: DB.transactions[idx].fechaISO || ''
+    };
+    saveDB(); closeEdit(); renderAll();
+  };
+
+  // ── GMAIL ────────────────────────────────────────────────────
+  window.showGmail  = function() { document.getElementById('m-gmail').classList.add('open'); };
+  window.closeGmail = function() { document.getElementById('m-gmail').classList.remove('open'); };
+
+  // ── INIT ─────────────────────────────────────────────────────
   // ── CLEANUP: remove legacy CMR cuota avance transactions ─────
   DB.transactions = DB.transactions.filter(function(t) {
     var desc = (t.desc || '').toLowerCase();
