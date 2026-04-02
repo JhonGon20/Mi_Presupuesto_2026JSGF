@@ -1560,45 +1560,27 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
   var driveToken      = null;
 
   function loadDB() {
-    try {
-      var r = localStorage.getItem('ppto_v7');
-      if (r) return JSON.parse(r);
-    } catch(e) {}
+    try { var r = localStorage.getItem('ppto_v7'); if (r) return JSON.parse(r); } catch(e) {}
     return JSON.parse(JSON.stringify(SEED));
   }
   function saveDB() {
-    DB._savedAt = DB._savedAt || 0;
-    DB._savedAt = Date.now();
     try { localStorage.setItem('ppto_v7', JSON.stringify(DB)); } catch(e) {}
-    if (driveReady && driveToken) driveSave();
-  }
-
-  // ── TOKEN PERSISTENCE ────────────────────────────────────
-  function saveToken(token) {
-    driveToken = token; driveReady = true;
-    try {
-      localStorage.setItem('ppto_drive_token', JSON.stringify({
-        token: token, expiry: Date.now() + 55*60*1000
-      }));
-    } catch(e) {}
-  }
-  function loadSavedToken() {
-    try {
-      var s = JSON.parse(localStorage.getItem('ppto_drive_token') || 'null');
-      if (s && s.expiry > Date.now()) return s.token;
-    } catch(e) {}
-    return null;
   }
 
   // ── BADGE ────────────────────────────────────────────────
-  function updateDriveBadge(connected) {
+  function updateDriveBadge(state) {
     var b = document.getElementById('drive-badge');
     if (!b) return;
-    if (connected) {
+    if (state === 'active') {
       b.textContent = '☁ Drive activo';
       b.style.color = 'var(--green)';
       b.style.borderColor = 'rgba(0,229,160,.3)';
       b.style.background  = 'rgba(0,229,160,.1)';
+    } else if (state === 'saving') {
+      b.textContent = '☁ Guardando...';
+      b.style.color = 'var(--amber)';
+      b.style.borderColor = 'rgba(255,165,0,.3)';
+      b.style.background  = 'rgba(255,165,0,.08)';
     } else {
       b.innerHTML = '&#9729; Drive';
       b.style.color = '#4285f4';
@@ -1607,75 +1589,71 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
     }
   }
 
-  // ── AUTO-CONNECT on page load ────────────────────────────
-  function driveAutoConnect() {
-    var t = loadSavedToken();
-    if (t) { driveToken = t; driveReady = true; updateDriveBadge(true); driveLoad(); }
-  }
-
-  // ── MANUAL CONNECT ───────────────────────────────────────
+  // ── CONNECT & LOAD ───────────────────────────────────────
   window.driveConnect = driveConnect;
   function driveConnect() {
-    if (driveReady) { driveLoad(); return; }
     if (typeof google === 'undefined') {
       showToast('Cargando Google API...'); setTimeout(driveConnect, 1500); return;
     }
+    if (driveReady) { driveSave(); return; }
     google.accounts.oauth2.initTokenClient({
       client_id: DRIVE_CLIENT_ID, scope: DRIVE_SCOPE,
       callback: function(resp) {
-        if (resp.error) return;
-        saveToken(resp.access_token);
-        updateDriveBadge(true);
-        driveLoad();
+        if (resp.error) { showToast('Error de autenticacion'); return; }
+        driveToken = resp.access_token;
+        driveReady = true;
+        // On connect: load from Drive first, then offer save
+        driveLoadOnce();
       }
     }).requestAccessToken();
   }
 
-  // ── LOAD — timestamp-based conflict resolution ───────────
-  window.driveLoad = driveLoad;
-  function driveLoad() {
+  function driveLoadOnce() {
+    // Load existing data from Drive (only on first connect)
     var url = 'https://www.googleapis.com/drive/v3/files?spaces=appDataFolder&q=name%3D%22' +
               DRIVE_FILE_NAME + '%22&fields=files(id)';
     fetch(url, { headers: { Authorization: 'Bearer ' + driveToken } })
-      .then(function(r) {
-        if (r.status === 401) { driveReady=false; updateDriveBadge(false); return null; }
-        return r.json();
-      })
+      .then(function(r) { return r.json(); })
       .then(function(data) {
-        if (!data) return;
         if (data.files && data.files.length > 0) {
           driveFileId = data.files[0].id;
           localStorage.setItem('ppto_drive_file_id', driveFileId);
+          // Load Drive data
           fetch('https://www.googleapis.com/drive/v3/files/' + driveFileId + '?alt=media',
             { headers: { Authorization: 'Bearer ' + driveToken } })
             .then(function(r) { return r.json(); })
             .then(function(driveData) {
-              if (!driveData || !driveData.transactions) return;
-              var localTs = DB._savedAt || 0;
-              var driveTs = driveData._savedAt || 0;
-              if (driveTs > localTs) {
+              if (driveData && driveData.transactions && driveData.transactions.length > 0) {
+                // Use Drive data
                 DB = driveData;
                 localStorage.setItem('ppto_v7', JSON.stringify(DB));
                 _clearCache(); renderAll();
-                showToast('Drive sincronizado');
-              } else if (localTs > driveTs) {
-                driveSave(); showToast('Drive actualizado');
+                updateDriveBadge('active');
+                showToast('Datos cargados de Drive');
               } else {
-                showToast('Drive: al dia');
+                // Drive is empty — push local data
+                updateDriveBadge('active');
+                driveSave();
               }
             });
         } else {
-          DB._savedAt = Date.now();
-          driveSave(); showToast('Drive: primer guardado');
+          // No file in Drive — create with local data
+          updateDriveBadge('active');
+          driveSave();
         }
       })
-      .catch(function(e) { console.error('driveLoad error:', e); });
+      .catch(function(e) {
+        console.error('driveLoadOnce error:', e);
+        updateDriveBadge('active');
+        showToast('Error cargando Drive');
+      });
   }
 
-  // ── SAVE ─────────────────────────────────────────────────
+  // ── MANUAL SAVE ──────────────────────────────────────────
   window.driveSave = driveSave;
   function driveSave() {
-    if (!driveReady || !driveToken) return;
+    if (!driveReady || !driveToken) { showToast('Conecta Drive primero'); return; }
+    updateDriveBadge('saving');
     var content  = JSON.stringify(DB);
     var boundary = 'ppto2026boundary';
     var metadata = JSON.stringify({ name: DRIVE_FILE_NAME, parents: ['appDataFolder'] });
@@ -1692,21 +1670,29 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
         Authorization: 'Bearer '+driveToken,
         'Content-Type': 'multipart/related; boundary='+boundary
       }, body: body
-    }).then(function(r) {
-        if (r.status===401) { driveReady=false; updateDriveBadge(false); return null; }
-        return r.json();
-      })
+    }).then(function(r) { return r.json(); })
       .then(function(d) {
-        if (d && d.id) { driveFileId=d.id; localStorage.setItem('ppto_drive_file_id',d.id); }
+        if (d && d.id) {
+          driveFileId = d.id;
+          localStorage.setItem('ppto_drive_file_id', d.id);
+        }
+        updateDriveBadge('active');
+        showToast('Guardado en Drive');
       })
-      .catch(function(e) { console.error('driveSave error:', e); });
+      .catch(function(e) {
+        console.error('driveSave error:', e);
+        updateDriveBadge('active');
+        showToast('Error guardando en Drive');
+      });
   }
 
   function showToast(msg) {
     var t = document.createElement('div');
-    t.style.cssText='position:fixed;bottom:80px;left:50%;transform:translateX(-50%);background:var(--green);color:#000;padding:8px 18px;border-radius:20px;font-size:12px;font-weight:600;z-index:9999';
-    t.textContent=msg; document.body.appendChild(t);
-    setTimeout(function(){ t.remove(); },2500);
+    t.style.cssText = 'position:fixed;bottom:80px;left:50%;transform:translateX(-50%);' +
+      'background:var(--green);color:#000;padding:8px 18px;border-radius:20px;' +
+      'font-size:12px;font-weight:600;z-index:9999';
+    t.textContent = msg; document.body.appendChild(t);
+    setTimeout(function(){ t.remove(); }, 2500);
   }
   window.showToast = showToast;
 
@@ -2648,7 +2634,6 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
   });
   saveDB();
   // ── INIT ───────────────────────────────────────────────────────
-  driveAutoConnect();
   renderHome();
 
 })();
