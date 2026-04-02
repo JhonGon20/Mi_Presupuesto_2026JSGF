@@ -186,6 +186,8 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
 .btn-danger{flex:1;padding:12px;background:var(--rdim);border:1px solid rgba(255,77,109,.3);border-radius:10px;color:var(--red);font-family:var(--font);font-size:14px;font-weight:600;cursor:pointer}
 .btn-safe{flex:1;padding:12px;background:var(--bg3);border:1px solid var(--border2);border-radius:10px;color:var(--text2);font-family:var(--font);font-size:14px;cursor:pointer}
 </style>
+  <script src="https://accounts.google.com/gsi/client" async defer></script>
+  <script src="https://apis.google.com/js/api.js" async defer></script>
 </head>
 <body>
 <div class="app">
@@ -197,7 +199,7 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
         <div style="font-size:11px;color:var(--text2)">Hola, Jhon Sebastian</div>
         <div style="font-size:19px;font-weight:700;margin-top:1px">Mi Presupuesto</div>
       </div>
-      <div class="sync-badge"><div class="sync-dot"></div>Gmail activo</div>
+      <div id="drive-badge" style="display:inline-flex;align-items:center;gap:5px;background:rgba(66,133,244,.12);border:1px solid rgba(66,133,244,.3);border-radius:20px;padding:4px 10px;font-size:11px;font-weight:600;color:#4285f4;cursor:pointer;margin-right:6px" onclick="driveConnect()">&#9729; Drive</div><div class="sync-badge"><div class="sync-dot"></div>Gmail activo</div>
     </div>
     <div class="pill-row" id="home-pills" style="padding-top:6px"></div>
     <div class="hero">
@@ -1549,6 +1551,14 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
   function fmt(n) { return '$' + Math.round(Math.abs(n)).toLocaleString('es-CO'); }
 
   // ── STORAGE ──────────────────────────────────────────────────
+  // ── GOOGLE DRIVE CONFIG ────────────────────────────────────
+  var DRIVE_CLIENT_ID = '434418243632-vn5huv7q5etnu3r6u89l991p0lunfhu2.apps.googleusercontent.com';
+  var DRIVE_SCOPE     = 'https://www.googleapis.com/auth/drive.appdata';
+  var DRIVE_FILE_NAME = 'presupuesto_2026_data.json';
+  var driveFileId     = localStorage.getItem('ppto_drive_file_id') || null;
+  var driveReady      = false;
+  var driveToken      = null;
+
   function loadDB() {
     try {
       var r = localStorage.getItem('ppto_v7');
@@ -1556,9 +1566,114 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
     } catch(e) {}
     return JSON.parse(JSON.stringify(SEED));
   }
+
   function saveDB() {
     try { localStorage.setItem('ppto_v7', JSON.stringify(DB)); } catch(e) {}
+    if (driveReady && driveToken) driveSave();
   }
+
+  // ── DRIVE INIT ───────────────────────────────────────────
+  function driveConnect() {
+    var badge = document.getElementById('drive-badge');
+    if (driveReady) {
+      if (badge) badge.textContent = '✓ Drive conectado';
+      driveLoad();
+      return;
+    }
+    if (typeof google === 'undefined') {
+      alert('Cargando Google API, intenta en unos segundos...');
+      return;
+    }
+    google.accounts.oauth2.initTokenClient({
+      client_id: DRIVE_CLIENT_ID,
+      scope: DRIVE_SCOPE,
+      callback: function(resp) {
+        if (resp.error) { console.error('Drive auth error:', resp.error); return; }
+        driveToken = resp.access_token;
+        driveReady = true;
+        if (badge) {
+          badge.textContent = '✓ Drive activo';
+          badge.style.color = 'var(--green)';
+          badge.style.borderColor = 'rgba(0,229,160,.3)';
+          badge.style.background = 'rgba(0,229,160,.1)';
+        }
+        driveLoad();
+      }
+    }).requestAccessToken();
+  }
+
+  function driveLoad() {
+    // First try to find existing file
+    var url = 'https://www.googleapis.com/drive/v3/files?spaces=appDataFolder&q=name%3D%22' + DRIVE_FILE_NAME + '%22&fields=files(id%2Cname)';
+    fetch(url, { headers: { Authorization: 'Bearer ' + driveToken } })
+      .then(function(r){ return r.json(); })
+      .then(function(data) {
+        if (data.files && data.files.length > 0) {
+          driveFileId = data.files[0].id;
+          localStorage.setItem('ppto_drive_file_id', driveFileId);
+          // Load content from Drive
+          return fetch('https://www.googleapis.com/drive/v3/files/' + driveFileId + '?alt=media', {
+            headers: { Authorization: 'Bearer ' + driveToken }
+          }).then(function(r){ return r.json(); })
+            .then(function(saved) {
+              if (saved && saved.transactions) {
+                DB = saved;
+                localStorage.setItem('ppto_v7', JSON.stringify(DB));
+                _clearCache();
+                renderAll();
+                showToast('Drive sincronizado');
+              }
+            });
+        } else {
+          // No file yet — create it with current data
+          driveSave();
+        }
+      })
+      .catch(function(e){ console.error('Drive load error:', e); });
+  }
+
+  function driveSave() {
+    if (!driveReady || !driveToken) return;
+    var content  = JSON.stringify(DB);
+    var boundary = 'ppto2026boundary';
+    var metadata = JSON.stringify({ name: DRIVE_FILE_NAME, parents: ['appDataFolder'] });
+    var nl = String.fromCharCode(13,10);
+    var body = '--' + boundary + nl +
+               'Content-Type: application/json' + nl + nl +
+               metadata + nl +
+               '--' + boundary + nl +
+               'Content-Type: application/json' + nl + nl +
+               content + nl +
+               '--' + boundary + '--';
+    var url    = driveFileId
+      ? 'https://www.googleapis.com/upload/drive/v3/files/' + driveFileId + '?uploadType=multipart'
+      : 'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart';
+    var method = driveFileId ? 'PATCH' : 'POST';
+    fetch(url, {
+      method: method,
+      headers: {
+        Authorization: 'Bearer ' + driveToken,
+        'Content-Type': 'multipart/related; boundary=' + boundary
+      },
+      body: body
+    }).then(function(r){ return r.json(); })
+      .then(function(data) {
+        if (data.id) {
+          driveFileId = data.id;
+          localStorage.setItem('ppto_drive_file_id', driveFileId);
+        }
+      })
+      .catch(function(e){ console.error('Drive save error:', e); });
+  }
+
+  function showToast(msg) {
+    var t = document.createElement('div');
+    t.style.cssText = 'position:fixed;bottom:80px;left:50%;transform:translateX(-50%);background:var(--green);color:#000;padding:8px 18px;border-radius:20px;font-size:12px;font-weight:600;z-index:9999;animation:fadeIn .3s';
+    t.textContent = msg;
+    document.body.appendChild(t);
+    setTimeout(function(){ t.remove(); }, 2500);
+  }
+  
   var DB = loadDB();
 
   // ── DEUDAS PAGADAS ────────────────────────────────────────
