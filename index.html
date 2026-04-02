@@ -1657,34 +1657,49 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
     updateDriveBadge('saving');
     var content  = JSON.stringify(DB);
     var boundary = 'ppto2026boundary';
-    var metadata = JSON.stringify({ name: DRIVE_FILE_NAME, parents: ['appDataFolder'] });
     var nl = String.fromCharCode(13,10);
-    var body = '--'+boundary+nl+'Content-Type: application/json'+nl+nl+
-               metadata+nl+'--'+boundary+nl+'Content-Type: application/json'+nl+nl+
-               content+nl+'--'+boundary+'--';
-    var url    = driveFileId
-      ? 'https://www.googleapis.com/upload/drive/v3/files/'+driveFileId+'?uploadType=multipart'
-      : 'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart';
-    fetch(url, {
-      method: driveFileId ? 'PATCH' : 'POST',
-      headers: {
-        Authorization: 'Bearer '+driveToken,
-        'Content-Type': 'multipart/related; boundary='+boundary
-      }, body: body
-    }).then(function(r) { return r.json(); })
-      .then(function(d) {
-        if (d && d.id) {
-          driveFileId = d.id;
-          localStorage.setItem('ppto_drive_file_id', d.id);
-        }
-        updateDriveBadge('active');
-        showToast('Guardado en Drive');
-      })
-      .catch(function(e) {
-        console.error('driveSave error:', e);
-        updateDriveBadge('active');
-        showToast('Error guardando en Drive');
-      });
+
+    if (driveFileId) {
+      // UPDATE existing file — only send content, no metadata with parents
+      var metaUpdate = JSON.stringify({ name: DRIVE_FILE_NAME });
+      var bodyUpdate = '--'+boundary+nl+'Content-Type: application/json'+nl+nl+
+                       metaUpdate+nl+'--'+boundary+nl+'Content-Type: application/json'+nl+nl+
+                       content+nl+'--'+boundary+'--';
+      fetch('https://www.googleapis.com/upload/drive/v3/files/'+driveFileId+'?uploadType=multipart', {
+        method: 'PATCH',
+        headers: {
+          Authorization: 'Bearer '+driveToken,
+          'Content-Type': 'multipart/related; boundary='+boundary
+        }, body: bodyUpdate
+      }).then(function(r) { return r.json(); })
+        .then(function(d) {
+          updateDriveBadge('active');
+          showToast(d.id ? 'Guardado en Drive' : 'Error: ' + (d.error && d.error.message || 'desconocido'));
+        })
+        .catch(function(e) { console.error('driveSave PATCH error:',e); updateDriveBadge('active'); showToast('Error guardando'); });
+    } else {
+      // CREATE new file — include parents
+      var metaCreate = JSON.stringify({ name: DRIVE_FILE_NAME, parents: ['appDataFolder'] });
+      var bodyCreate = '--'+boundary+nl+'Content-Type: application/json'+nl+nl+
+                       metaCreate+nl+'--'+boundary+nl+'Content-Type: application/json'+nl+nl+
+                       content+nl+'--'+boundary+'--';
+      fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart', {
+        method: 'POST',
+        headers: {
+          Authorization: 'Bearer '+driveToken,
+          'Content-Type': 'multipart/related; boundary='+boundary
+        }, body: bodyCreate
+      }).then(function(r) { return r.json(); })
+        .then(function(d) {
+          if (d && d.id) {
+            driveFileId = d.id;
+            localStorage.setItem('ppto_drive_file_id', d.id);
+          }
+          updateDriveBadge('active');
+          showToast(d.id ? 'Guardado en Drive' : 'Error: ' + (d.error && d.error.message || 'desconocido'));
+        })
+        .catch(function(e) { console.error('driveSave POST error:',e); updateDriveBadge('active'); showToast('Error guardando'); });
+    }
   }
 
   function showToast(msg) {
