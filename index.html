@@ -1566,6 +1566,7 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
   function saveDB() {
     try { localStorage.setItem('ppto_v7', JSON.stringify(DB)); } catch(e) {}
   }
+  var DB = loadDB();
 
   // ── BADGE ────────────────────────────────────────────────
   function updateDriveBadge(state) {
